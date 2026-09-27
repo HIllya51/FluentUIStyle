@@ -1,0 +1,3 @@
+# 锁定版本号，确保与 FluentUI3StylePlugin.dll 的 Qt 构建环境匹配：
+# 插件需为 Qt 5.15.x 构建（qt5-build.yml 产物），且位数需与 Python 一致
+PyQt5==5.15.11
