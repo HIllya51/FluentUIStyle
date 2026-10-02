@@ -181,7 +181,7 @@ if(FLUENTUI3_LEGACY_WINDOWS)
         include(FetchContent)
         FetchContent_Declare(vc_ltl
             URL https://github.com/Chuyu-Team/VC-LTL5/releases/download/v5.2.1/VC-LTL-Binary.7z
-            URL_HASH SHA256=d37f2201bc32a56a3bc79b8e609281aab90973afbc9de3d7eaa3b030b102c9b7
+            URL_HASH SHA256=0b0b17b7a4ed993701208b2eaeba91f3acf2f1b5402430b52ac7bfbca2519464
             DOWNLOAD_EXTRACT_TIMESTAMP true)
         FetchContent_MakeAvailable(vc_ltl)
         include("${vc_ltl_SOURCE_DIR}/VC-LTL helper for cmake.cmake")
