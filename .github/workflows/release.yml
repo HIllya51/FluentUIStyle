@@ -19,6 +19,11 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  # YY-Thunks v1.2.2（x86 腿：链接 WinXP obj 以支持 Windows XP）
+  YY_THUNKS_URL: https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.2/YY-Thunks-Objs.zip
+  YY_THUNKS_SHA256: 518ed7ef4825e8a41997fbccfa2c8090cf31a6038fd51520a2e49886f947f9fc
+
 jobs:
   build:
     name: ${{ matrix.name }}
@@ -29,23 +34,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Windows / Qt 6.6.3 / MSVC
+          - name: Windows / Qt 5.15.2 / x64
             os: windows-2022
-            qt-version: 6.6.3
             qt-arch: win64_msvc2019_64
-            qt-modules: qtmultimedia
-            generator: Visual Studio 17 2022
-            configure-args: -A x64
-            package-suffix: Windows-Qt6.6.3-x64
-
-          - name: Windows / Qt 5.15.2 / MSVC
-            os: windows-2022
-            qt-version: 5.15.2
-            qt-arch: win64_msvc2019_64
-            qt-modules: ""
-            generator: Visual Studio 17 2022
-            configure-args: -A x64
+            cmake-platform: x64
             package-suffix: Windows-Qt5.15.2-x64
+            xp: 'false'
+
+          - name: Windows / Qt 5.15.2 / x86 (Windows XP)
+            os: windows-2022
+            qt-arch: win32_msvc2019
+            cmake-platform: Win32
+            package-suffix: Windows-Qt5.15.2-x86-XP
+            xp: 'true'
 
     steps:
       - name: Check out repository
@@ -72,33 +73,69 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4.3.1
         with:
-          version: ${{ matrix.qt-version }}
+          version: 5.15.2
           arch: ${{ matrix.qt-arch }}
-          modules: ${{ matrix.qt-modules }}
           cache: true
-          cache-key-prefix: qt-${{ matrix.os }}-${{ matrix.qt-version }}-${{ matrix.qt-arch }}
+          cache-key-prefix: qt-${{ matrix.os }}-5.15.2-${{ matrix.qt-arch }}
           setup-python: false
 
+      - name: Download YY-Thunks objs (XP only)
+        if: matrix.xp == 'true'
+        shell: pwsh
+        run: |
+          $dst = "$env:RUNNER_TEMP/yy-thunks"
+          New-Item -ItemType Directory -Path $dst -Force | Out-Null
+          $zip = "$dst/YY-Thunks-Objs.zip"
+          curl.exe -fsSL -o $zip "$env:YY_THUNKS_URL"
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne "$env:YY_THUNKS_SHA256") {
+              throw "YY-Thunks-Objs.zip checksum mismatch: got $hash"
+          }
+          # 只抽取 x86 WinXP obj + XP SP3 系统导出表（导入表校验用）
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zipObj = [System.IO.Compression.ZipFile]::OpenRead($zip)
+          try {
+              foreach ($name in @('objs/x86/YY_Thunks_for_WinXP.obj', 'Config/x86/5.1.2600.txt')) {
+                  $entry = $zipObj.Entries | Where-Object { $_.FullName -eq $name }
+                  if (-not $entry) { throw "$name not found in archive" }
+                  [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, "$dst/" + [IO.Path]::GetFileName($name), $true)
+              }
+          } finally {
+              $zipObj.Dispose()
+          }
+          Write-Host "YY-Thunks obj: $dst/YY_Thunks_for_WinXP.obj"
+          Write-Host "XP exports  : $dst/5.1.2600.txt"
+
       - name: Configure CMake
-        run: >-
-          cmake -S . -B build
-          -G "${{ matrix.generator }}"
-          ${{ matrix.configure-args }}
-          -DCMAKE_BUILD_TYPE=Release
-          -DBUILD_LIBRARY=ON
-          -DBUILD_PLUGIN=ON
-          -DBUILD_EXAMPLES=ON
-          -DBUILD_FRAMELESS=ON
-          -DBUILD_QTCREATOR_PLUGIN=OFF
-          -DEXWIDGETS_BUILD_TESTS=OFF
-          -DFLUENTUI3STYLE_COPY_TO_QT_DIR=OFF
-          -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/stage"
+        shell: pwsh
+        run: |
+          $xpArgs = ""
+          if ("${{ matrix.xp }}" -eq "true") {
+              $xpArgs = "-DFLUENTUI3_WINXP_SUPPORT=ON -DYY_THUNKS_OBJ=`"$env:RUNNER_TEMP/yy-thunks/YY_Thunks_for_WinXP.obj`""
+          }
+          cmake -S . -B build -G "Visual Studio 17 2022" -A ${{ matrix.cmake-platform }} `
+            -DBUILD_LIBRARY=ON `
+            -DBUILD_PLUGIN=ON `
+            -DBUILD_FRAMELESS=ON `
+            -DBUILD_EXAMPLES=OFF `
+            -DBUILD_QTCREATOR_PLUGIN=OFF `
+            -DEXWIDGETS_BUILD_TESTS=OFF `
+            -DFLUENTUI3STYLE_COPY_TO_QT_DIR=OFF `
+            -DCMAKE_INSTALL_PREFIX="$env:GITHUB_WORKSPACE/stage" `
+            $xpArgs
 
       - name: Build
         run: cmake --build build --config Release --parallel 2
 
       - name: Install to Stage
         run: cmake --install build --config Release --prefix "${{ github.workspace }}/stage"
+
+      - name: Verify Windows XP compatibility (PE headers & imports)
+        if: matrix.xp == 'true'
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check pefile
+          python .github/scripts/verify_xp.py "${{ github.workspace }}/stage" "$env:RUNNER_TEMP/yy-thunks/5.1.2600.txt"
 
       - name: Package SDK
         shell: pwsh
@@ -107,65 +144,6 @@ jobs:
           $sdkZipName = "FluentUI3-SDK-$tag-${{ matrix.package-suffix }}.zip"
           Compress-Archive -Path "${{ github.workspace }}/stage/*" -DestinationPath "${{ github.workspace }}/$sdkZipName"
           Write-Host "Created SDK Package: $sdkZipName"
-
-      - name: Package Gallery Portable
-        shell: pwsh
-        run: |
-          $tag = "${{ steps.tag_info.outputs.tag }}"
-          $galleryDir = "${{ github.workspace }}/package_gallery"
-          New-Item -ItemType Directory -Path $galleryDir -Force | Out-Null
-
-          # 定位生成二进制目录（处理 Visual Studio 默认按配置输出子目录的情况）
-          $binDir = "${{ github.workspace }}/build/bin"
-          if (Test-Path "$binDir/Release/Gallery.exe") {
-              $binDir = "$binDir/Release"
-          }
-
-          Write-Host "Copying runtime binaries from: $binDir"
-          # 复制所有可执行程序与依赖 DLL（排除独立 FluentUI3Style.dll，样式由插件提供）
-          Copy-Item "$binDir/*.exe" -Destination $galleryDir -Force
-          Get-ChildItem -Path $binDir -Filter "*.dll" | Where-Object { $_.Name -notmatch '^FluentUI3Style\.dll$' } | Copy-Item -Destination $galleryDir -Force
-
-          # 4. 复制样式插件目录
-          $stylesSourceDir = "$binDir/plugins/styles"
-          if (-not (Test-Path $stylesSourceDir)) {
-              $stylesSourceDir = "$binDir/styles"
-          }
-          if (Test-Path $stylesSourceDir) {
-              # Qt 标准插件目录 plugins/styles
-              $targetPluginsStyles = "$galleryDir/plugins/styles"
-              New-Item -ItemType Directory -Path $targetPluginsStyles -Force | Out-Null
-              Copy-Item "$stylesSourceDir/*.dll" -Destination $targetPluginsStyles -Force
-
-              # 兼容备用 styles 目录
-              $targetStyles = "$galleryDir/styles"
-              New-Item -ItemType Directory -Path $targetStyles -Force | Out-Null
-              Copy-Item "$stylesSourceDir/*.dll" -Destination $targetStyles -Force
-          }
-
-          # 3. 官方标准原生 windeployqt 自动部署所有 Qt 运行环境
-          $galleryExe = "$galleryDir/Gallery.exe"
-          Write-Host "Running official windeployqt on $galleryExe..."
-          $windeployCmd = Get-Command windeployqt.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
-          if (-not $windeployCmd) {
-              $windeployCmd = (Get-ChildItem -Path "$env:RUNNER_TEMP", "C:/Qt", "D:/a" -Filter "windeployqt.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-          }
-          if ($windeployCmd) {
-              Write-Host "Found windeployqt: $windeployCmd"
-              & $windeployCmd --release --no-translations --compiler-runtime --no-opengl-sw "$galleryExe"
-          } else {
-              windeployqt.exe --release --no-translations --compiler-runtime --no-opengl-sw "$galleryExe"
-          }
-
-          # 确保根目录绝不残留多余的 FluentUI3Style.dll
-          if (Test-Path "$galleryDir/FluentUI3Style.dll") {
-              Remove-Item "$galleryDir/FluentUI3Style.dll" -Force
-          }
-
-          # 压缩为 Portable 绿色包
-          $galleryZipName = "FluentUI3-Gallery-$tag-${{ matrix.package-suffix }}.zip"
-          Compress-Archive -Path "$galleryDir/*" -DestinationPath "${{ github.workspace }}/$galleryZipName"
-          Write-Host "Created Gallery Portable Package: $galleryZipName"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
@@ -189,7 +167,7 @@ jobs:
         run: |
           TAG="${{ github.ref_name }}"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag_name }}" ]; then
-            TAG="${{ inputs.tag_name }}"
+              TAG="${{ inputs.tag_name }}"
           fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 

@@ -143,6 +143,41 @@ option(BUILD_FRAMELESS "Build the QWindowKit-based frameless window component" O
 option(BUILD_EXAMPLES "Build example applications" ON)
 option(BUILD_QTCREATOR_PLUGIN "Build Qt Creator extension plugin" OFF)
 
+# --- Windows XP support (32-bit MSVC + YY-Thunks) ---
+# 产出 XP 可加载的 DLL（Readme §2.4.1 手动配置的 CMake 化）：
+#   * 静态 CRT (/MT) —— XP 上没有 vcruntime140/ucrtbase，动态 CRT 的 DLL 无法加载
+#   * YY_Thunks_for_WinXP.obj —— 链接期接管新版 Windows API 导入（kernel32 等）
+#   * 子系统 5.01 —— XP 加载器拒绝 SubsystemVersion > 5.01 的模块
+#   * DLL 入口替换为 DllMainCRTStartupForYY_Thunks —— XP DLL 的 thread_local
+#     依赖该入口注册的 TLS 回调，直接用 CRT 默认入口会加载即崩
+# 用法：
+#   cmake -G "Visual Studio 17 2022" -A Win32 \
+#         -DFLUENTUI3_WINXP_SUPPORT=ON \
+#         -DYY_THUNKS_OBJ=<dir>/objs/x86/YY_Thunks_for_WinXP.obj
+option(FLUENTUI3_WINXP_SUPPORT "Build Windows XP loadable DLLs via YY-Thunks (Win32 MSVC only)" OFF)
+set(YY_THUNKS_OBJ "" CACHE FILEPATH
+    "Path to objs/x86/YY_Thunks_for_WinXP.obj from YY-Thunks-Objs.zip (required by FLUENTUI3_WINXP_SUPPORT)")
+
+if(FLUENTUI3_WINXP_SUPPORT)
+    if(NOT WIN32 OR NOT MSVC)
+        message(FATAL_ERROR "FLUENTUI3_WINXP_SUPPORT is only available with the MSVC toolchain")
+    endif()
+    if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+        message(FATAL_ERROR
+            "FLUENTUI3_WINXP_SUPPORT requires the 32-bit toolchain (-A Win32); "
+            "the WinXP YY-Thunks obj is x86-only")
+    endif()
+    if(NOT YY_THUNKS_OBJ OR NOT EXISTS "${YY_THUNKS_OBJ}")
+        message(FATAL_ERROR
+            "FLUENTUI3_WINXP_SUPPORT requires YY_THUNKS_OBJ to point at "
+            "objs/x86/YY_Thunks_for_WinXP.obj "
+            "(https://github.com/Chuyu-Team/YY-Thunks releases)")
+    endif()
+    # MSVC_RUNTIME_LIBRARY 属性在每个 target 创建时取值，必须在 add_subdirectory 之前设置
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    message(STATUS "Windows XP support : ON (YY-Thunks: ${YY_THUNKS_OBJ}, static CRT)")
+endif()
+
 if(NOT WIN32)
     set(BUILD_PLUGIN OFF)
 endif()
@@ -180,6 +215,25 @@ endif()
 
 if(BUILD_EXAMPLES)
     add_subdirectory(Examples)
+endif()
+
+# YY-Thunks 链接选项只挂到共享库目标（EXE 不能用 DLL 入口；静态库不参与链接）。
+# obj 提供的 __imp_ 桩在链接期优先于导入库成员，MSVC 循环扫库语义下顺序无关。
+if(FLUENTUI3_WINXP_SUPPORT)
+    foreach(_xp_target IN ITEMS ExWidgets FluentUI3Style FluentUI3StylePlugin QWKCore QWKWidgets)
+        if(TARGET ${_xp_target})
+            get_target_property(_xp_type ${_xp_target} TYPE)
+            if(_xp_type STREQUAL "SHARED_LIBRARY" OR _xp_type STREQUAL "MODULE_LIBRARY")
+                target_link_options(${_xp_target} PRIVATE
+                    "${YY_THUNKS_OBJ}"
+                    "/SUBSYSTEM:WINDOWS,5.01"
+                    "/ENTRY:DllMainCRTStartupForYY_Thunks"
+                    "/alternatename:_YY_ThunksOriginalDllMainCRTStartup@12=__DllMainCRTStartup@12"
+                )
+                message(STATUS "YY-Thunks linked into : ${_xp_target}")
+            endif()
+        endif()
+    endforeach()
 endif()
 
 # --- Install (DLL / import lib / headers / CMake packages) ---
