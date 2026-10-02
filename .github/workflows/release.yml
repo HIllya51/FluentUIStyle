@@ -17,7 +17,7 @@ concurrency:
 env:
   # 固定发布到 rolling release "common"（同名资产自动替换）
   RELEASE_TAG: common
-  # YY-Thunks v1.2.2（x86 腿：链接 WinXP obj 以支持 Windows XP）
+  # YY-Thunks v1.2.2（legacy 腿：Win7 链 x64 obj / WinXP 链 x86 obj）
   YY_THUNKS_URL: https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.2/YY-Thunks-Objs.zip
   YY_THUNKS_SHA256: 518ed7ef4825e8a41997fbccfa2c8090cf31a6038fd51520a2e49886f947f9fc
 
@@ -31,19 +31,33 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # 1) x64 动态链接（常规，依赖 VC/UCRT 运行时）
           - name: Windows / Qt 5.15.2 / x64
             os: windows-2022
             qt-arch: win64_msvc2019_64
             cmake-platform: x64
             package-suffix: Windows-Qt5.15.2-x64
-            xp: 'false'
+            legacy: ''
 
-          - name: Windows / Qt 5.15.2 / x86 (Windows XP)
+          # 2) x64 静态 CRT + YY-Thunks Win7 obj（Win7 RTM 无 SP 可加载）
+          - name: Windows / Qt 5.15.2 / x64 (Win7 static)
+            os: windows-2022
+            qt-arch: win64_msvc2019_64
+            cmake-platform: x64
+            package-suffix: Windows-Qt5.15.2-x64-Win7
+            legacy: Win7
+            yy-obj: objs/x64/YY_Thunks_for_Win7.obj
+            yy-exports: Config/x64/6.1.7600.txt
+
+          # 3) x86 静态 CRT + YY-Thunks WinXP obj（XP SP3 可加载）
+          - name: Windows / Qt 5.15.2 / x86 (WinXP static)
             os: windows-2022
             qt-arch: win32_msvc2019
             cmake-platform: Win32
             package-suffix: Windows-Qt5.15.2-x86-XP
-            xp: 'true'
+            legacy: WinXP
+            yy-obj: objs/x86/YY_Thunks_for_WinXP.obj
+            yy-exports: Config/x86/5.1.2600.txt
 
     steps:
       - name: Check out repository
@@ -65,8 +79,8 @@ jobs:
           cache-key-prefix: qt-${{ matrix.os }}-5.15.2-${{ matrix.qt-arch }}
           setup-python: false
 
-      - name: Download YY-Thunks objs (XP only)
-        if: matrix.xp == 'true'
+      - name: Download YY-Thunks objs (legacy legs)
+        if: matrix.legacy != ''
         shell: pwsh
         run: |
           $dst = "$env:RUNNER_TEMP/yy-thunks"
@@ -77,27 +91,31 @@ jobs:
           if ($hash -ne "$env:YY_THUNKS_SHA256") {
               throw "YY-Thunks-Objs.zip checksum mismatch: got $hash"
           }
-          # 只抽取 x86 WinXP obj + XP SP3 系统导出表（导入表校验用）
+          # 按 matrix 抽取对应架构的 obj + 目标系统导出表（导入表校验用）
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $zipObj = [System.IO.Compression.ZipFile]::OpenRead($zip)
           try {
-              foreach ($name in @('objs/x86/YY_Thunks_for_WinXP.obj', 'Config/x86/5.1.2600.txt')) {
+              foreach ($name in @('${{ matrix.yy-obj }}', '${{ matrix.yy-exports }}')) {
                   $entry = $zipObj.Entries | Where-Object { $_.FullName -eq $name }
                   if (-not $entry) { throw "$name not found in archive" }
-                  [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, "$dst/" + [IO.Path]::GetFileName($name), $true)
+                  $target = "$dst/" + [IO.Path]::GetFileName($name)
+                  [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $true)
+                  Write-Host "Extracted: $target"
               }
           } finally {
               $zipObj.Dispose()
           }
-          Write-Host "YY-Thunks obj: $dst/YY_Thunks_for_WinXP.obj"
-          Write-Host "XP exports  : $dst/5.1.2600.txt"
 
       - name: Configure CMake
         shell: pwsh
         run: |
-          $xpArgs = ""
-          if ("${{ matrix.xp }}" -eq "true") {
-              $xpArgs = "-DFLUENTUI3_WINXP_SUPPORT=ON -DYY_THUNKS_OBJ=`"$env:RUNNER_TEMP/yy-thunks/YY_Thunks_for_WinXP.obj`""
+          $extra = @()
+          if ("${{ matrix.legacy }}" -ne "") {
+              $objName = Split-Path '${{ matrix.yy-obj }}' -Leaf
+              $extra = @(
+                  "-DFLUENTUI3_LEGACY_WINDOWS=${{ matrix.legacy }}",
+                  "-DYY_THUNKS_OBJ=$env:RUNNER_TEMP/yy-thunks/$objName"
+              )
           }
           cmake -S . -B build -G "Visual Studio 17 2022" -A ${{ matrix.cmake-platform }} `
             -DBUILD_LIBRARY=ON `
@@ -108,7 +126,7 @@ jobs:
             -DEXWIDGETS_BUILD_TESTS=OFF `
             -DFLUENTUI3STYLE_COPY_TO_QT_DIR=OFF `
             -DCMAKE_INSTALL_PREFIX="$env:GITHUB_WORKSPACE/stage" `
-            $xpArgs
+            @extra
 
       - name: Build
         run: cmake --build build --config Release --parallel 2
@@ -116,12 +134,12 @@ jobs:
       - name: Install to Stage
         run: cmake --install build --config Release --prefix "${{ github.workspace }}/stage"
 
-      - name: Verify Windows XP compatibility (PE headers & imports)
-        if: matrix.xp == 'true'
+      - name: Verify legacy Windows compatibility (PE headers & imports)
+        if: matrix.legacy != ''
         shell: pwsh
         run: |
           python -m pip install --disable-pip-version-check pefile
-          python .github/scripts/verify_xp.py "${{ github.workspace }}/stage" "$env:RUNNER_TEMP/yy-thunks/5.1.2600.txt"
+          python .github/scripts/verify_legacy.py "${{ github.workspace }}/stage" "$env:RUNNER_TEMP/yy-thunks/$(Split-Path '${{ matrix.yy-exports }}' -Leaf)" "${{ matrix.legacy }}"
 
       - name: Package SDK
         shell: pwsh

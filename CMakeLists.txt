@@ -143,39 +143,64 @@ option(BUILD_FRAMELESS "Build the QWindowKit-based frameless window component" O
 option(BUILD_EXAMPLES "Build example applications" ON)
 option(BUILD_QTCREATOR_PLUGIN "Build Qt Creator extension plugin" OFF)
 
-# --- Windows XP support (32-bit MSVC + YY-Thunks) ---
-# 产出 XP 可加载的 DLL（Readme §2.4.1 手动配置的 CMake 化）：
-#   * 静态 CRT (/MT) —— XP 上没有 vcruntime140/ucrtbase，动态 CRT 的 DLL 无法加载
-#   * YY_Thunks_for_WinXP.obj —— 链接期接管新版 Windows API 导入（kernel32 等）
-#   * 子系统 5.01 —— XP 加载器拒绝 SubsystemVersion > 5.01 的模块
-#   * DLL 入口替换为 DllMainCRTStartupForYY_Thunks —— XP DLL 的 thread_local
-#     依赖该入口注册的 TLS 回调，直接用 CRT 默认入口会加载即崩
+# --- Legacy Windows support (YY-Thunks + static CRT) ---
+# 产出老系统可加载的 DLL（YY-Thunks Readme §2.4.1 手动配置的 CMake 化）：
+#   * 静态 CRT (/MT) —— 老系统没有 vcruntime140/ucrtbase 的可靠官方通道
+#     （XP 完全没有；Win7 无 SP 装不上 KB2999226，14.41+ redist 只要 Win10+）
+#   * YY-Thunks obj —— 链接期接管新版 Windows API 导入（WinXP→x86 obj，Win7→x64 obj）
+#   * 子系统版本降级 —— 老系统加载器拒绝更高 SubsystemVersion 的模块
+#   * DLL 入口替换为 DllMainCRTStartupForYY_Thunks + alternatename 还原原入口
+#     —— 老 DLL 的 thread_local 依赖该入口注册的 TLS 回调，直接用 CRT 默认入口会加载即崩
+# 目标：
+#   WinXP = 32 位 MSVC + objs/x86/YY_Thunks_for_WinXP.obj + 子系统 5.01
+#   Win7  = 64 位 MSVC + objs/x64/YY_Thunks_for_Win7.obj  + 子系统 6.01
 # 用法：
 #   cmake -G "Visual Studio 17 2022" -A Win32 \
-#         -DFLUENTUI3_WINXP_SUPPORT=ON \
+#         -DFLUENTUI3_LEGACY_WINDOWS=WinXP \
 #         -DYY_THUNKS_OBJ=<dir>/objs/x86/YY_Thunks_for_WinXP.obj
-option(FLUENTUI3_WINXP_SUPPORT "Build Windows XP loadable DLLs via YY-Thunks (Win32 MSVC only)" OFF)
+#   cmake -G "Visual Studio 17 2022" -A x64 \
+#         -DFLUENTUI3_LEGACY_WINDOWS=Win7 \
+#         -DYY_THUNKS_OBJ=<dir>/objs/x64/YY_Thunks_for_Win7.obj
+set(FLUENTUI3_LEGACY_WINDOWS "" CACHE STRING
+    "Target legacy Windows via YY-Thunks + static CRT: WinXP (x86) / Win7 (x64); empty = off")
 set(YY_THUNKS_OBJ "" CACHE FILEPATH
-    "Path to objs/x86/YY_Thunks_for_WinXP.obj from YY-Thunks-Objs.zip (required by FLUENTUI3_WINXP_SUPPORT)")
+    "Path to YY_Thunks_for_WinXP.obj / YY_Thunks_for_Win7.obj from YY-Thunks-Objs.zip (required by FLUENTUI3_LEGACY_WINDOWS)")
 
-if(FLUENTUI3_WINXP_SUPPORT)
+if(FLUENTUI3_LEGACY_WINDOWS)
     if(NOT WIN32 OR NOT MSVC)
-        message(FATAL_ERROR "FLUENTUI3_WINXP_SUPPORT is only available with the MSVC toolchain")
+        message(FATAL_ERROR "FLUENTUI3_LEGACY_WINDOWS is only available with the MSVC toolchain")
     endif()
-    if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+    if(FLUENTUI3_LEGACY_WINDOWS STREQUAL "WinXP")
+        set(_legacy_subsystem "5.01")
+        set(_legacy_alternate
+            "/alternatename:_YY_ThunksOriginalDllMainCRTStartup@12=__DllMainCRTStartup@12")
+        set(_legacy_arch "32-bit (-A Win32)")
+        set(_legacy_ptr 4)
+    elseif(FLUENTUI3_LEGACY_WINDOWS STREQUAL "Win7")
+        set(_legacy_subsystem "6.01")
+        set(_legacy_alternate
+            "/alternatename:YY_ThunksOriginalDllMainCRTStartup=_DllMainCRTStartup")
+        set(_legacy_arch "64-bit (-A x64)")
+        set(_legacy_ptr 8)
+    else()
         message(FATAL_ERROR
-            "FLUENTUI3_WINXP_SUPPORT requires the 32-bit toolchain (-A Win32); "
-            "the WinXP YY-Thunks obj is x86-only")
+            "FLUENTUI3_LEGACY_WINDOWS must be WinXP or Win7, got '${FLUENTUI3_LEGACY_WINDOWS}'")
+    endif()
+    if(NOT CMAKE_SIZEOF_VOID_P EQUAL _legacy_ptr)
+        message(FATAL_ERROR
+            "FLUENTUI3_LEGACY_WINDOWS=${FLUENTUI3_LEGACY_WINDOWS} requires the "
+            "${_legacy_arch} toolchain")
     endif()
     if(NOT YY_THUNKS_OBJ OR NOT EXISTS "${YY_THUNKS_OBJ}")
         message(FATAL_ERROR
-            "FLUENTUI3_WINXP_SUPPORT requires YY_THUNKS_OBJ to point at "
-            "objs/x86/YY_Thunks_for_WinXP.obj "
+            "FLUENTUI3_LEGACY_WINDOWS requires YY_THUNKS_OBJ to point at the matching "
+            "objs/<arch>/YY_Thunks_for_${FLUENTUI3_LEGACY_WINDOWS}.obj "
             "(https://github.com/Chuyu-Team/YY-Thunks releases)")
     endif()
     # MSVC_RUNTIME_LIBRARY 属性在每个 target 创建时取值，必须在 add_subdirectory 之前设置
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    message(STATUS "Windows XP support : ON (YY-Thunks: ${YY_THUNKS_OBJ}, static CRT)")
+    message(STATUS "Legacy Windows target: ${FLUENTUI3_LEGACY_WINDOWS} "
+                   "(YY-Thunks: ${YY_THUNKS_OBJ}, static CRT, subsystem ${_legacy_subsystem})")
 endif()
 
 if(NOT WIN32)
@@ -219,18 +244,18 @@ endif()
 
 # YY-Thunks 链接选项只挂到共享库目标（EXE 不能用 DLL 入口；静态库不参与链接）。
 # obj 提供的 __imp_ 桩在链接期优先于导入库成员，MSVC 循环扫库语义下顺序无关。
-if(FLUENTUI3_WINXP_SUPPORT)
-    foreach(_xp_target IN ITEMS ExWidgets FluentUI3Style FluentUI3StylePlugin QWKCore QWKWidgets)
-        if(TARGET ${_xp_target})
-            get_target_property(_xp_type ${_xp_target} TYPE)
-            if(_xp_type STREQUAL "SHARED_LIBRARY" OR _xp_type STREQUAL "MODULE_LIBRARY")
-                target_link_options(${_xp_target} PRIVATE
+if(FLUENTUI3_LEGACY_WINDOWS)
+    foreach(_legacy_target IN ITEMS ExWidgets FluentUI3Style FluentUI3StylePlugin QWKCore QWKWidgets)
+        if(TARGET ${_legacy_target})
+            get_target_property(_legacy_type ${_legacy_target} TYPE)
+            if(_legacy_type STREQUAL "SHARED_LIBRARY" OR _legacy_type STREQUAL "MODULE_LIBRARY")
+                target_link_options(${_legacy_target} PRIVATE
                     "${YY_THUNKS_OBJ}"
-                    "/SUBSYSTEM:WINDOWS,5.01"
+                    "/SUBSYSTEM:WINDOWS,${_legacy_subsystem}"
                     "/ENTRY:DllMainCRTStartupForYY_Thunks"
-                    "/alternatename:_YY_ThunksOriginalDllMainCRTStartup@12=__DllMainCRTStartup@12"
+                    "${_legacy_alternate}"
                 )
-                message(STATUS "YY-Thunks linked into : ${_xp_target}")
+                message(STATUS "YY-Thunks linked into : ${_legacy_target}")
             endif()
         endif()
     endforeach()
