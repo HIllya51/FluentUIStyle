@@ -17,9 +17,11 @@ concurrency:
 env:
   # 固定发布到 rolling release "common"（同名资产自动替换）
   RELEASE_TAG: common
-  # YY-Thunks v1.2.2（legacy 腿：Win7 链 x64 obj / WinXP 链 x86 obj）
-  YY_THUNKS_URL: https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.2/YY-Thunks-Objs.zip
-  YY_THUNKS_SHA256: 518ed7ef4825e8a41997fbccfa2c8090cf31a6038fd51520a2e49886f947f9fc
+  # 目标系统导出表（仅用作 verify_legacy.py 的校验数据，不链接 YY-Thunks 本体）
+  # WinXP -> Config/x86/5.1.2600.txt（XP SP3）
+  # Win7  -> Config/x64/6.1.7600.txt（Win7 RTM 无 SP）
+  EXPORTS_URL: https://github.com/Chuyu-Team/YY-Thunks/releases/download/v1.2.2/YY-Thunks-Objs.zip
+  EXPORTS_SHA256: 518ed7ef4825e8a41997fbccfa2c8090cf31a6038fd51520a2e49886f947f9fc
 
 jobs:
   build:
@@ -31,7 +33,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # 1) x64 动态链接（常规，依赖 VC/UCRT 运行时）
+          # 1) x64 动态链接（常规 SDK，依赖 VC/UCRT 运行时）
           - name: Windows / Qt 5.15.2 / x64
             os: windows-2022
             qt-arch: win64_msvc2019_64
@@ -39,25 +41,23 @@ jobs:
             package-suffix: Windows-Qt5.15.2-x64
             legacy: ''
 
-          # 2) x64 静态 CRT + YY-Thunks Win7 obj（Win7 RTM 无 SP 可加载）
+          # 2) x64 静态 CRT（Win7 RTM 无 SP 可加载；VC-LTL/YY-Thunks 均不使用）
           - name: Windows / Qt 5.15.2 / x64 (Win7 static)
             os: windows-2022
             qt-arch: win64_msvc2019_64
             cmake-platform: x64
             package-suffix: Windows-Qt5.15.2-x64-Win7
             legacy: Win7
-            yy-obj: objs/x64/YY_Thunks_for_Win7.obj
-            yy-exports: Config/x64/6.1.7600.txt
+            exports: Config/x64/6.1.7600.txt
 
-          # 3) x86 静态 CRT + YY-Thunks WinXP obj（XP SP3 可加载）
-          - name: Windows / Qt 5.15.2 / x86 (WinXP static)
+          # 3) x86 + VC-LTL msvcrt 模式（XP SP3 可加载；无 YY-Thunks）
+          - name: Windows / Qt 5.15.2 / x86 (WinXP)
             os: windows-2022
             qt-arch: win32_msvc2019
             cmake-platform: Win32
             package-suffix: Windows-Qt5.15.2-x86-XP
             legacy: WinXP
-            yy-obj: objs/x86/YY_Thunks_for_WinXP.obj
-            yy-exports: Config/x86/5.1.2600.txt
+            exports: Config/x86/5.1.2600.txt
 
     steps:
       - name: Check out repository
@@ -79,48 +79,45 @@ jobs:
           cache-key-prefix: qt-${{ matrix.os }}-5.15.2-${{ matrix.qt-arch }}
           setup-python: false
 
-      - name: Download YY-Thunks objs (legacy legs)
+      - name: Download target OS export tables (legacy legs)
         if: matrix.legacy != ''
         shell: pwsh
         run: |
-          $dst = "$env:RUNNER_TEMP/yy-thunks"
+          $dst = "$env:RUNNER_TEMP/exports"
           New-Item -ItemType Directory -Path $dst -Force | Out-Null
           $zip = "$dst/YY-Thunks-Objs.zip"
-          curl.exe -fsSL -o $zip "$env:YY_THUNKS_URL"
+          curl.exe -fsSL -o $zip "$env:EXPORTS_URL"
           $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
-          if ($hash -ne "$env:YY_THUNKS_SHA256") {
-              throw "YY-Thunks-Objs.zip checksum mismatch: got $hash"
+          if ($hash -ne "$env:EXPORTS_SHA256") {
+              throw "export tables zip checksum mismatch: got $hash"
           }
-          # 按 matrix 抽取对应架构的 obj + 目标系统导出表（导入表校验用）
+          # 只抽取目标系统的导出表（校验数据；不使用 YY-Thunks obj）
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $zipObj = [System.IO.Compression.ZipFile]::OpenRead($zip)
           try {
-              foreach ($name in @('${{ matrix.yy-obj }}', '${{ matrix.yy-exports }}')) {
-                  $entry = $zipObj.Entries | Where-Object { $_.FullName -eq $name }
-                  if (-not $entry) { throw "$name not found in archive" }
-                  $target = "$dst/" + [IO.Path]::GetFileName($name)
-                  [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $true)
-                  Write-Host "Extracted: $target"
-              }
+              $entry = $zipObj.Entries | Where-Object { $_.FullName -eq '${{ matrix.exports }}' }
+              if (-not $entry) { throw "${{ matrix.exports }} not found in archive" }
+              [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, "$dst/exports.txt", $true)
           } finally {
               $zipObj.Dispose()
           }
+          Write-Host "Export table: $dst/exports.txt"
 
       - name: Configure CMake
         shell: pwsh
         run: |
+          # legacy 腿只发布 FluentUI3StylePlugin.dll —— 关掉其余组件并只构建该目标
           $extra = @()
           if ("${{ matrix.legacy }}" -ne "") {
-              $objName = Split-Path '${{ matrix.yy-obj }}' -Leaf
               $extra = @(
                   "-DFLUENTUI3_LEGACY_WINDOWS=${{ matrix.legacy }}",
-                  "-DYY_THUNKS_OBJ=$env:RUNNER_TEMP/yy-thunks/$objName"
+                  "-DBUILD_LIBRARY=OFF",
+                  "-DBUILD_FRAMELESS=OFF"
               )
+              Add-Content -Path "$env:GITHUB_ENV" -Value "BUILD_TARGET=--target FluentUI3StylePlugin"
           }
           cmake -S . -B build -G "Visual Studio 17 2022" -A ${{ matrix.cmake-platform }} `
-            -DBUILD_LIBRARY=ON `
             -DBUILD_PLUGIN=ON `
-            -DBUILD_FRAMELESS=ON `
             -DBUILD_EXAMPLES=OFF `
             -DBUILD_QTCREATOR_PLUGIN=OFF `
             -DEXWIDGETS_BUILD_TESTS=OFF `
@@ -129,9 +126,11 @@ jobs:
             @extra
 
       - name: Build
-        run: cmake --build build --config Release --parallel 2
+        shell: pwsh
+        run: cmake --build build --config Release --parallel 2 $env:BUILD_TARGET
 
-      - name: Install to Stage
+      - name: Install to Stage (SDK leg only)
+        if: matrix.legacy == ''
         run: cmake --install build --config Release --prefix "${{ github.workspace }}/stage"
 
       - name: Verify legacy Windows compatibility (PE headers & imports)
@@ -139,14 +138,21 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --disable-pip-version-check pefile
-          python .github/scripts/verify_legacy.py "${{ github.workspace }}/stage" "$env:RUNNER_TEMP/yy-thunks/$(Split-Path '${{ matrix.yy-exports }}' -Leaf)" "${{ matrix.legacy }}"
+          python .github/scripts/verify_legacy.py "${{ github.workspace }}/build/plugins/styles" "$env:RUNNER_TEMP/exports/exports.txt" "${{ matrix.legacy }}"
 
-      - name: Package SDK
+      - name: Package
         shell: pwsh
         run: |
-          $sdkZipName = "FluentUI3-SDK-$env:RELEASE_TAG-${{ matrix.package-suffix }}.zip"
-          Compress-Archive -Path "${{ github.workspace }}/stage/*" -DestinationPath "${{ github.workspace }}/$sdkZipName"
-          Write-Host "Created SDK Package: $sdkZipName"
+          if ("${{ matrix.legacy }}" -ne "") {
+              # legacy 产物：仅插件 DLL
+              $zipName = "FluentUI3StylePlugin-$env:RELEASE_TAG-${{ matrix.package-suffix }}.zip"
+              Compress-Archive -Path "${{ github.workspace }}/build/plugins/styles/FluentUI3StylePlugin.dll" -DestinationPath "${{ github.workspace }}/$zipName"
+          } else {
+              # 常规产物：完整 SDK
+              $zipName = "FluentUI3-SDK-$env:RELEASE_TAG-${{ matrix.package-suffix }}.zip"
+              Compress-Archive -Path "${{ github.workspace }}/stage/*" -DestinationPath "${{ github.workspace }}/$zipName"
+          }
+          Write-Host "Created Package: $zipName"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4

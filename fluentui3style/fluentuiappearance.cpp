@@ -9,13 +9,6 @@
 #include <QStyleHints>
 #include <QPalette>
 
-#ifdef Q_OS_WIN
-#include <dwmapi.h>
-#ifdef _MSC_VER
-#pragma comment(lib, "dwmapi.lib")
-#endif
-#endif
-
 class FluentUIAppearancePrivate
 {
 public:
@@ -86,9 +79,22 @@ void FluentUIAppearancePrivate::updateTitleBar()
     if (mainWindow == nullptr)
         return;
 
+    // dwmapi 运行时动态解析：dwmapi.dll 是 Vista+ 才有（XP 上不存在），
+    // 静态导入会让插件在老系统上直接加载失败
+    static auto pfnDwmSetWindowAttribute = [] {
+        using Fn = HRESULT(WINAPI *)(HWND, DWORD, LPCVOID, DWORD);
+        HMODULE mod = GetModuleHandleW(L"dwmapi.dll");
+        if (mod == nullptr)
+            mod = LoadLibraryW(L"dwmapi.dll");
+        return reinterpret_cast<Fn>(
+            mod ? GetProcAddress(mod, "DwmSetWindowAttribute") : nullptr);
+    }();
+    if (pfnDwmSetWindowAttribute == nullptr)
+        return;
+
     HWND hwnd = reinterpret_cast<HWND>(mainWindow->winId());
     BOOL darkMode = theme == Theme::Dark;
-    DwmSetWindowAttribute(hwnd, 20, &darkMode, sizeof(darkMode));
+    pfnDwmSetWindowAttribute(hwnd, 20, &darkMode, sizeof(darkMode));
 #endif
 #endif
 }

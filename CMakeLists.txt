@@ -143,64 +143,58 @@ option(BUILD_FRAMELESS "Build the QWindowKit-based frameless window component" O
 option(BUILD_EXAMPLES "Build example applications" ON)
 option(BUILD_QTCREATOR_PLUGIN "Build Qt Creator extension plugin" OFF)
 
-# --- Legacy Windows support (YY-Thunks + static CRT) ---
-# 产出老系统可加载的 DLL（YY-Thunks Readme §2.4.1 手动配置的 CMake 化）：
-#   * 静态 CRT (/MT) —— 老系统没有 vcruntime140/ucrtbase 的可靠官方通道
-#     （XP 完全没有；Win7 无 SP 装不上 KB2999226，14.41+ redist 只要 Win10+）
-#   * YY-Thunks obj —— 链接期接管新版 Windows API 导入（WinXP→x86 obj，Win7→x64 obj）
-#   * 子系统版本降级 —— 老系统加载器拒绝更高 SubsystemVersion 的模块
-#   * DLL 入口替换为 DllMainCRTStartupForYY_Thunks + alternatename 还原原入口
-#     —— 老 DLL 的 thread_local 依赖该入口注册的 TLS 回调，直接用 CRT 默认入口会加载即崩
-# 目标：
-#   WinXP = 32 位 MSVC + objs/x86/YY_Thunks_for_WinXP.obj + 子系统 5.01
-#   Win7  = 64 位 MSVC + objs/x64/YY_Thunks_for_Win7.obj  + 子系统 6.01
+# --- Legacy Windows support（仅 FluentUI3StylePlugin，无 YY-Thunks） ---
+# 老系统兼容全部在编译/链接层完成，不做任何运行时 API 模拟：
+#   Win7 = 64 位 MSVC + 静态 CRT(/MT) + 子系统 6.01
+#     * 插件自身的 Win32 API 全为 Vista 时代（SRWLock 等 Vista+ 在 Win7 均可用）
+#     * /MT 消除 vcruntime140/ucrtbase 依赖（Win7 无 SP 装不上 KB2999226，
+#       14.41+ redist 只支持 Win10+）
+#     * 源码层：std::chrono 改 QDateTime —— 静态 CRT 的 _Xtime_get_ticks
+#       静态引用 Win8+ 的 GetSystemTimePreciseAsFileTime
+#   WinXP = 32 位 MSVC + VC-LTL(msvcrt.dll 模式) + /Zc:threadSafeInit- + 子系统 5.01
+#     * VC-LTL 把 CRT 重定向到 XP 自带的系统 msvcrt.dll —— 静态 UCRT 的启动
+#       对象静态引用 Vista+ 的 FlsAlloc/InitializeCriticalSectionEx 等，XP 上必死
+#     * /Zc:threadSafeInit- 去掉 magic static 的 SRWLock 守卫（XP 无 SRWLock）
+#     * 源码层：dwmapi 改运行时动态解析（XP 无 dwmapi.dll）+ QDateTime（同上）
 # 用法：
-#   cmake -G "Visual Studio 17 2022" -A Win32 \
-#         -DFLUENTUI3_LEGACY_WINDOWS=WinXP \
-#         -DYY_THUNKS_OBJ=<dir>/objs/x86/YY_Thunks_for_WinXP.obj
-#   cmake -G "Visual Studio 17 2022" -A x64 \
-#         -DFLUENTUI3_LEGACY_WINDOWS=Win7 \
-#         -DYY_THUNKS_OBJ=<dir>/objs/x64/YY_Thunks_for_Win7.obj
+#   cmake -G "Visual Studio 17 2022" -A x64  -DFLUENTUI3_LEGACY_WINDOWS=Win7
+#   cmake -G "Visual Studio 17 2022" -A Win32 -DFLUENTUI3_LEGACY_WINDOWS=WinXP
 set(FLUENTUI3_LEGACY_WINDOWS "" CACHE STRING
-    "Target legacy Windows via YY-Thunks + static CRT: WinXP (x86) / Win7 (x64); empty = off")
-set(YY_THUNKS_OBJ "" CACHE FILEPATH
-    "Path to YY_Thunks_for_WinXP.obj / YY_Thunks_for_Win7.obj from YY-Thunks-Objs.zip (required by FLUENTUI3_LEGACY_WINDOWS)")
+    "Build FluentUI3StylePlugin for legacy Windows: WinXP (x86) / Win7 (x64); empty = off")
+set_property(CACHE FLUENTUI3_LEGACY_WINDOWS PROPERTY STRINGS "" WinXP Win7)
 
 if(FLUENTUI3_LEGACY_WINDOWS)
     if(NOT WIN32 OR NOT MSVC)
         message(FATAL_ERROR "FLUENTUI3_LEGACY_WINDOWS is only available with the MSVC toolchain")
     endif()
-    if(FLUENTUI3_LEGACY_WINDOWS STREQUAL "WinXP")
-        set(_legacy_subsystem "5.01")
-        set(_legacy_alternate
-            "/alternatename:_YY_ThunksOriginalDllMainCRTStartup@12=__DllMainCRTStartup@12")
-        set(_legacy_arch "32-bit (-A Win32)")
-        set(_legacy_ptr 4)
-    elseif(FLUENTUI3_LEGACY_WINDOWS STREQUAL "Win7")
+    if(FLUENTUI3_LEGACY_WINDOWS STREQUAL "Win7")
+        if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+            message(FATAL_ERROR "FLUENTUI3_LEGACY_WINDOWS=Win7 requires the 64-bit toolchain (-A x64)")
+        endif()
         set(_legacy_subsystem "6.01")
-        set(_legacy_alternate
-            "/alternatename:YY_ThunksOriginalDllMainCRTStartup=_DllMainCRTStartup")
-        set(_legacy_arch "64-bit (-A x64)")
-        set(_legacy_ptr 8)
+    elseif(FLUENTUI3_LEGACY_WINDOWS STREQUAL "WinXP")
+        if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+            message(FATAL_ERROR "FLUENTUI3_LEGACY_WINDOWS=WinXP requires the 32-bit toolchain (-A Win32)")
+        endif()
+        # VC-LTL：同名 CRT 库前置查找路径，把 CRT 重定向到系统 msvcrt.dll
+        set(WindowsTargetPlatformMinVersion "5.1.2600.0")
+        include(FetchContent)
+        FetchContent_Declare(vc_ltl
+            URL https://github.com/Chuyu-Team/VC-LTL5/releases/download/v5.2.1/VC-LTL-Binary.7z
+            URL_HASH SHA256=d37f2201bc32a56a3bc79b8e609281aab90973afbc9de3d7eaa3b030b102c9b7
+            DOWNLOAD_EXTRACT_TIMESTAMP true)
+        FetchContent_MakeAvailable(vc_ltl)
+        include("${vc_ltl_SOURCE_DIR}/VC-LTL helper for cmake.cmake")
+        set(_legacy_subsystem "5.01")
     else()
         message(FATAL_ERROR
             "FLUENTUI3_LEGACY_WINDOWS must be WinXP or Win7, got '${FLUENTUI3_LEGACY_WINDOWS}'")
     endif()
-    if(NOT CMAKE_SIZEOF_VOID_P EQUAL _legacy_ptr)
-        message(FATAL_ERROR
-            "FLUENTUI3_LEGACY_WINDOWS=${FLUENTUI3_LEGACY_WINDOWS} requires the "
-            "${_legacy_arch} toolchain")
-    endif()
-    if(NOT YY_THUNKS_OBJ OR NOT EXISTS "${YY_THUNKS_OBJ}")
-        message(FATAL_ERROR
-            "FLUENTUI3_LEGACY_WINDOWS requires YY_THUNKS_OBJ to point at the matching "
-            "objs/<arch>/YY_Thunks_for_${FLUENTUI3_LEGACY_WINDOWS}.obj "
-            "(https://github.com/Chuyu-Team/YY-Thunks releases)")
-    endif()
-    # MSVC_RUNTIME_LIBRARY 属性在每个 target 创建时取值，必须在 add_subdirectory 之前设置
+    # MSVC_RUNTIME_LIBRARY 属性在每个 target 创建时取值，必须在 add_subdirectory 之前设置。
+    # WinXP 用 /MT 与 VC-LTL 的静态库形态（libucrt/libvcruntime）配对；Win7 直接全静态。
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    message(STATUS "Legacy Windows target: ${FLUENTUI3_LEGACY_WINDOWS} "
-                   "(YY-Thunks: ${YY_THUNKS_OBJ}, static CRT, subsystem ${_legacy_subsystem})")
+    message(STATUS "Legacy Windows target : ${FLUENTUI3_LEGACY_WINDOWS} "
+                   "(subsystem ${_legacy_subsystem})")
 endif()
 
 if(NOT WIN32)
@@ -242,23 +236,20 @@ if(BUILD_EXAMPLES)
     add_subdirectory(Examples)
 endif()
 
-# YY-Thunks 链接选项只挂到共享库目标（EXE 不能用 DLL 入口；静态库不参与链接）。
-# obj 提供的 __imp_ 桩在链接期优先于导入库成员，MSVC 循环扫库语义下顺序无关。
-if(FLUENTUI3_LEGACY_WINDOWS)
-    foreach(_legacy_target IN ITEMS ExWidgets FluentUI3Style FluentUI3StylePlugin QWKCore QWKWidgets)
-        if(TARGET ${_legacy_target})
-            get_target_property(_legacy_type ${_legacy_target} TYPE)
-            if(_legacy_type STREQUAL "SHARED_LIBRARY" OR _legacy_type STREQUAL "MODULE_LIBRARY")
-                target_link_options(${_legacy_target} PRIVATE
-                    "${YY_THUNKS_OBJ}"
-                    "/SUBSYSTEM:WINDOWS,${_legacy_subsystem}"
-                    "/ENTRY:DllMainCRTStartupForYY_Thunks"
-                    "${_legacy_alternate}"
-                )
-                message(STATUS "YY-Thunks linked into : ${_legacy_target}")
-            endif()
-        endif()
-    endforeach()
+# 老系统选项只挂到 FluentUI3StylePlugin（legacy 产物只发布该 DLL；
+# EXE/静态库不在 legacy 产物里，无需处理）。
+if(FLUENTUI3_LEGACY_WINDOWS AND TARGET FluentUI3StylePlugin)
+    target_link_options(FluentUI3StylePlugin PRIVATE
+        "/SUBSYSTEM:WINDOWS,${_legacy_subsystem}")
+    set(_legacy_plugin_extra "")
+    if(FLUENTUI3_LEGACY_WINDOWS STREQUAL "WinXP")
+        # 关闭 magic static 的线程安全初始化：其 SRWLock 守卫在 XP 上不存在。
+        # 样式插件仅由 GUI 线程使用，非线程安全初始化可接受。
+        target_compile_options(FluentUI3StylePlugin PRIVATE "/Zc:threadSafeInit-")
+        set(_legacy_plugin_extra ", /Zc:threadSafeInit-")
+    endif()
+    message(STATUS "Legacy plugin options  : FluentUI3StylePlugin "
+                   "(subsystem ${_legacy_subsystem}${_legacy_plugin_extra})")
 endif()
 
 # --- Install (DLL / import lib / headers / CMake packages) ---

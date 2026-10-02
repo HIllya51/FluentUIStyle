@@ -32,10 +32,7 @@ target_link_libraries(FluentUI3StylePlugin PRIVATE
     Qt${QT_VERSION_MAJOR}::Widgets
     Qt${QT_VERSION_MAJOR}::Svg
 )
-
-if(WIN32)
-    target_link_libraries(FluentUI3StylePlugin PRIVATE dwmapi)
-endif()
+# dwmapi 不再静态链接：源码运行时动态解析（XP 无 dwmapi.dll，见 fluentuiappearance.cpp）
 
 set_target_properties(FluentUI3StylePlugin PROPERTIES
     DEBUG_POSTFIX d

@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QCursor>
 #include <QDate>
+#include <QDateTime>
 #include <QDial>
 #include <QDialogButtonBox>
 #include <QDockWidget>
@@ -5570,8 +5571,9 @@ void FluentUI3Style::drawProgressRing( const QStyleOptionProgressBar* option,
             startAnimation( anim );
         }
         const int loopDurationMSec = widget->property( ProgressBarRingIndeterminateDurationProperty ).toInt();
-        const auto elapsedTime     = std::chrono::time_point_cast<std::chrono::milliseconds>( std::chrono::system_clock::now() );
-        const auto elapsed         = elapsedTime.time_since_epoch().count();
+        // QDateTime 而非 std::chrono：静态 CRT 的 _Xtime_get_ticks 静态引用
+        // Win8+ 的 GetSystemTimePreciseAsFileTime，会破坏 Win7 兼容
+        const qint64 elapsed       = QDateTime::currentMSecsSinceEpoch();
         const qreal t              = ( elapsed % loopDurationMSec ) / float( loopDurationMSec );
         // Qt angles are CCW; use negative to rotate clockwise.
         startAngle = -360.0 * t;
@@ -6165,9 +6167,9 @@ void FluentUI3Style::drawControl( ControlElement element, const QStyleOption* op
                         anim->setFrameRate( QStyleAnimation::SixtyFps );
                         startAnimation( anim );
                     }
-                    constexpr auto loopDurationMSec = 4000;
-                    const auto elapsedTime  = std::chrono::time_point_cast<std::chrono::milliseconds>( std::chrono::system_clock::now() );
-                    const auto elapsed      = elapsedTime.time_since_epoch().count();
+                    constexpr qint64 loopDurationMSec = 4000;
+                    // QDateTime 而非 std::chrono（Win7 兼容，见上方同类注释）
+                    const qint64 elapsed     = QDateTime::currentMSecsSinceEpoch();
                     const auto handleCenter = ( elapsed % loopDurationMSec ) / float( loopDurationMSec );
                     const auto isLongHandle = ( elapsed / loopDurationMSec ) % 2 == 0;
                     const auto lengthFactor = ( isLongHandle ? 33.0f : 25.0f ) / 100.0f;
