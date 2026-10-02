@@ -9,6 +9,10 @@
 #include <QStyleHints>
 #include <QPalette>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+
 class FluentUIAppearancePrivate
 {
 public:
