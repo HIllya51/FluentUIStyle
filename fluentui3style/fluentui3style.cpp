@@ -8712,8 +8712,20 @@ QColor FluentUI3Style::accentColor( const QStyleOption* option ) const
     QBrush br = option->palette.accent();
     return br.color();
 #else
-    bool isDark       = colorSchemeIndex == 1;
-    QColor baseAccent = PaletteManager::instance().accentColor( isDark );
+    // Qt5 无 QPalette::Accent 角色（_q_accent_color 只在 >=6.6 的
+    // PaletteManager::applyPalette 里生效）——这里直接读应用属性，
+    // 与 Qt6.6 的属性路径保持同一约定（Gallery 同款）
+    QColor baseAccent;
+    const QVariant accentColorVariant = qApp->property( "_q_accent_color" );
+    if ( accentColorVariant.isValid() )
+    {
+        baseAccent = accentColorVariant.value<QColor>();
+    }
+    if ( !baseAccent.isValid() )
+    {
+        const bool isDark = colorSchemeIndex == 1;
+        baseAccent        = PaletteManager::instance().accentColor( isDark );
+    }
     if ( !( option->state & QStyle::State_Enabled ) )
     {
         return baseAccent.darker( 150 ).lighter( 120 );
