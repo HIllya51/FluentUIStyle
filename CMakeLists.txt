@@ -138,7 +138,7 @@ foreach(_cfg DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
 endforeach()
 
 option(BUILD_LIBRARY "Build as library" ON)
-option(BUILD_PLUGIN "Build as plugin (Windows only)" ON)
+option(BUILD_PLUGIN "Build the FluentUI3Style Qt style plugin" ON)
 option(BUILD_FRAMELESS "Build the QWindowKit-based frameless window component" ON)
 option(BUILD_EXAMPLES "Build example applications" ON)
 option(BUILD_QTCREATOR_PLUGIN "Build Qt Creator extension plugin" OFF)
@@ -197,9 +197,6 @@ if(FLUENTUI3_LEGACY_WINDOWS)
                    "(subsystem ${_legacy_subsystem})")
 endif()
 
-if(NOT WIN32)
-    set(BUILD_PLUGIN OFF)
-endif()
 
 # Android windows already use the Activity surface and must not install a desktop title bar.
 if(ANDROID)

@@ -36,6 +36,9 @@ target_link_libraries(FluentUI3StylePlugin PRIVATE
 
 set_target_properties(FluentUI3StylePlugin PROPERTIES
     DEBUG_POSTFIX d
+    # 去掉 Unix 的 lib 前缀：与 Windows 的 FluentUI3StylePlugin.dll 同名，
+    # 便于跨平台统一安装到 plugins/styles（Qt 加载器两种命名都接受）
+    PREFIX ""
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/plugins/styles
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/plugins/styles
     LIBRARY_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/plugins/styles
