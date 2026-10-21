@@ -37,6 +37,7 @@ jobs:
           - name: Windows / Qt 5.15.2 / x64
             os: windows-2022
             qt-arch: win64_msvc2019_64
+            cmake-generator: Visual Studio 17 2022
             cmake-platform: x64
             package-suffix: Windows-Qt5.15.2-x64
             legacy: ''
@@ -45,6 +46,7 @@ jobs:
           - name: Windows / Qt 5.15.2 / x64 (Win7 static)
             os: windows-2022
             qt-arch: win64_msvc2019_64
+            cmake-generator: Visual Studio 17 2022
             cmake-platform: x64
             package-suffix: Windows-Qt5.15.2-x64-Win7
             legacy: Win7
@@ -54,10 +56,19 @@ jobs:
           - name: Windows / Qt 5.15.2 / x86 (WinXP)
             os: windows-2022
             qt-arch: win32_msvc2019
+            cmake-generator: Visual Studio 17 2022
             cmake-platform: Win32
             package-suffix: Windows-Qt5.15.2-x86-XP
             legacy: WinXP
             exports: Config/x86/5.1.2600.txt
+
+          # 4) Linux x64（SDK：插件仅 Windows，构建 ExWidgets/FluentUI3Style/Frameless）
+          - name: Linux / Qt 5.15.2 / x64
+            os: ubuntu-22.04
+            qt-arch: gcc_64
+            cmake-generator: Ninja
+            package-suffix: Linux-Qt5.15.2-x64
+            legacy: ''
 
     steps:
       - name: Check out repository
@@ -116,7 +127,12 @@ jobs:
               )
               Add-Content -Path "$env:GITHUB_ENV" -Value "BUILD_TARGET=--target FluentUI3StylePlugin"
           }
-          cmake -S . -B build -G "Visual Studio 17 2022" -A ${{ matrix.cmake-platform }} `
+          $genArgs = @('-G', '${{ matrix.cmake-generator }}')
+          if ('${{ matrix.cmake-platform }}' -ne '') {
+              $genArgs += @('-A', '${{ matrix.cmake-platform }}')
+          }
+          cmake -S . -B build @genArgs `
+            -DCMAKE_BUILD_TYPE=Release `
             -DBUILD_PLUGIN=ON `
             -DBUILD_EXAMPLES=OFF `
             -DBUILD_QTCREATOR_PLUGIN=OFF `
@@ -147,18 +163,26 @@ jobs:
               # legacy 产物：仅插件 DLL
               $zipName = "FluentUI3StylePlugin-$env:RELEASE_TAG-${{ matrix.package-suffix }}.zip"
               Compress-Archive -Path "${{ github.workspace }}/build/plugins/styles/FluentUI3StylePlugin.dll" -DestinationPath "${{ github.workspace }}/$zipName"
+              Write-Host "Created Package: $zipName"
+          } elseif ("${{ runner.os }}" -eq "Linux") {
+              # Linux SDK：tar.gz（保留符号链接与可执行位）
+              $pkgName = "FluentUI3-SDK-$env:RELEASE_TAG-${{ matrix.package-suffix }}.tar.gz"
+              tar -czf "$env:GITHUB_WORKSPACE/$pkgName" -C "$env:GITHUB_WORKSPACE/stage" .
+              Write-Host "Created Package: $pkgName"
           } else {
-              # 常规产物：完整 SDK
+              # Windows SDK：zip
               $zipName = "FluentUI3-SDK-$env:RELEASE_TAG-${{ matrix.package-suffix }}.zip"
               Compress-Archive -Path "${{ github.workspace }}/stage/*" -DestinationPath "${{ github.workspace }}/$zipName"
+              Write-Host "Created Package: $zipName"
           }
-          Write-Host "Created Package: $zipName"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: packages-${{ matrix.package-suffix }}
-          path: "${{ github.workspace }}/*.zip"
+          path: |
+            ${{ github.workspace }}/*.zip
+            ${{ github.workspace }}/*.tar.gz
           if-no-files-found: error
 
   publish:
@@ -206,7 +230,9 @@ jobs:
           name: "common"
           tag_name: common
           body_path: release_notes.md
-          files: release_assets/*.zip
+          files: |
+            release_assets/*.zip
+            release_assets/*.tar.gz
           draft: false
           prerelease: false
         env:
